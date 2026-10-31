@@ -1,0 +1,1 @@
+{"config":{"step":{"user":{"title":"CUK Customer Zone","description":"Enter the CUK user's ObjectId. The integration will resolve CukUserId automatically.","data":{"user_id":"CUK user ObjectId"}}},"error":{"invalid_user_id":"Enter the CUK user ObjectId."},"abort":{"already_configured":"This CUK account is already configured."}}}

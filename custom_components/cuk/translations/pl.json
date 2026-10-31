@@ -1,0 +1,1 @@
+{"config":{"step":{"user":{"title":"CUK Strefa Klienta","description":"Podaj ObjectId użytkownika CUK. Integracja automatycznie pobierze CukUserId.","data":{"user_id":"ObjectId użytkownika CUK"}}},"error":{"invalid_user_id":"Podaj ObjectId użytkownika CUK."},"abort":{"already_configured":"To konto CUK jest już skonfigurowane."}}}
