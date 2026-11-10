@@ -7,8 +7,10 @@ from typing import TypeAlias
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.typing import ConfigType
 
 from .api import CukApi, CukApiAuthenticationError
 from .const import CONF_USER_ID, DOMAIN, PLATFORMS
@@ -16,8 +18,10 @@ from .coordinator import CukCoordinator
 
 CukConfigEntry: TypeAlias = ConfigEntry[CukCoordinator]
 
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
-async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the integration (YAML is not supported)."""
     return True
 

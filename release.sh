@@ -14,13 +14,14 @@ MANIFEST="${REPO_DIR}/custom_components/cuk/manifest.json"
 
 python3 -c "
 import json
-with open('${MANIFEST}', 'r+') as f:
+with open('${MANIFEST}', 'r') as f:
     d = json.load(f)
-    d['version'] = '${NEW_VER}'
-    f.seek(0)
-    json.dump(d, f, indent=2, ensure_ascii=False)
+d['version'] = '${NEW_VER}'
+order = {'domain': 0, 'name': 1}
+sorted_d = dict(sorted(d.items(), key=lambda x: (order.get(x[0], 2), x[0])))
+with open('${MANIFEST}', 'w') as f:
+    json.dump(sorted_d, f, indent=2, ensure_ascii=False)
     f.write('\n')
-    f.truncate()
 "
 
 if [ -d "${REPO_DIR}/blueprints/automation/cuk" ]; then
