@@ -1,33 +1,29 @@
+"""Sensor platform for CUK Strefa Klienta."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+)
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from . import CukConfigEntry
+from .const import CONF_EXPIRING_DAYS, DEFAULT_EXPIRING_DAYS
 from .coordinator import CukCoordinator
-
-
-def _dt(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        d = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError):
-        return None
-
-
-def _device_info() -> dict[str, Any]:
-    return {
-        "identifiers": {(DOMAIN, "cuk")},
-        "name": "CUK Strefa Klienta",
-        "manufacturer": "CUK Ubezpieczenia",
-    }
+from .models import (
+    get_active_policies,
+    get_device_info,
+    get_next_payment,
+    get_unpaid_installments,
+    parse_date,
+)
 
 
 def _policies(coordinator: CukCoordinator) -> list[dict[str, Any]]:
@@ -41,194 +37,164 @@ def _assistant(coordinator: CukCoordinator) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _is_active(policy: dict[str, Any], now: datetime | None = None) -> bool:
-    now = now or datetime.now(timezone.utc)
-    start = _dt(policy.get("DataObowiazywaniaOd"))
-    end = _dt(policy.get("DataObowiazywaniaDo"))
-    # In CUK data Status=0 marks the current policy set. Keep the date check as
-    # an additional guard so a stale/future record is not exposed as active.
-    return (
-        policy.get("Status") == 0
-        and start is not None
-        and end is not None
-        and start <= now <= end
-    )
-
-
-def _active_policies(coordinator: CukCoordinator) -> list[dict[str, Any]]:
-    now = datetime.now(timezone.utc)
-    return [p for p in _policies(coordinator) if _is_active(p, now)]
-
-
-def _installments(coordinator: CukCoordinator):
-    for policy in _policies(coordinator):
-        for installment in policy.get("Raty") or []:
-            yield policy, installment
-
-
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: CukConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    coordinator: CukCoordinator = entry.runtime_data
+    """Set up CUK sensor entities."""
+    coordinator = entry.runtime_data
+    entry_id = entry.entry_id
+    expiring_days = entry.options.get(CONF_EXPIRING_DAYS, DEFAULT_EXPIRING_DAYS)
+
     async_add_entities(
         [
-            CukPoliciesSensor(coordinator),
-            CukActivePoliciesSensor(coordinator),
-            CukUnpaidSensor(coordinator),
-            CukReceivablesSensor(coordinator),
-            CukNextPaymentDateSensor(coordinator),
-            CukNextPaymentAmountSensor(coordinator),
-            CukExpiringSensor(coordinator),
-            CukAssistantSensor(coordinator),
+            CukPoliciesSensor(coordinator, entry_id),
+            CukActivePoliciesSensor(coordinator, entry_id),
+            CukUnpaidSensor(coordinator, entry_id),
+            CukReceivablesSensor(coordinator, entry_id),
+            CukNextPaymentDateSensor(coordinator, entry_id),
+            CukNextPaymentAmountSensor(coordinator, entry_id),
+            CukExpiringSensor(coordinator, entry_id, expiring_days),
+            CukAssistantSensor(coordinator, entry_id),
         ]
     )
 
 
-class CukBaseSensor(SensorEntity):
+class CukBaseSensor(CoordinatorEntity[CukCoordinator], SensorEntity):
+    """Base class for CUK sensors."""
+
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator: CukCoordinator, unique_id: str, name: str) -> None:
-        self.coordinator = coordinator
-        self._attr_unique_id = unique_id
-        self._attr_name = name
-        self._attr_device_info = _device_info()
+    def __init__(
+        self, coordinator: CukCoordinator, entry_id: str, key: str
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry_id}_{key}"
+        self._attr_translation_key = key
+        self._attr_device_info = get_device_info(entry_id)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         last_update = (self.coordinator.data or {}).get("last_update")
         return {"last_update": last_update.isoformat() if last_update else None}
 
-    @property
-    def available(self) -> bool:
-        return self.coordinator.last_update_success
-
-    async def async_added_to_hass(self) -> None:
-        self.async_on_remove(
-            self.coordinator.async_add_listener(self.async_write_ha_state)
-        )
-
 
 class CukPoliciesSensor(CukBaseSensor):
-    _attr_native_unit_of_measurement = "szt."
+    """Total policies count sensor."""
 
-    def __init__(self, coordinator: CukCoordinator) -> None:
-        super().__init__(coordinator, "cuk_policies", "Polisy")
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: CukCoordinator, entry_id: str) -> None:
+        super().__init__(coordinator, entry_id, "policies")
 
     @property
-    def native_value(self) -> Any:
+    def native_value(self) -> int:
         return len(_policies(self.coordinator))
 
 
 class CukActivePoliciesSensor(CukBaseSensor):
-    _attr_native_unit_of_measurement = "szt."
+    """Active policies count sensor."""
 
-    def __init__(self, coordinator: CukCoordinator) -> None:
-        super().__init__(coordinator, "cuk_active_policies", "Aktywne polisy")
-
-    @property
-    def native_value(self) -> Any:
-        return len(_active_policies(self.coordinator))
+    def __init__(self, coordinator: CukCoordinator, entry_id: str) -> None:
+        super().__init__(coordinator, entry_id, "active_policies")
 
     @property
-    def extra_state_attributes(self):
-        # Details are intentionally exposed only for currently active policies.
+    def native_value(self) -> int:
+        return len(get_active_policies(_policies(self.coordinator)))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
         policies = []
-        for p in _active_policies(self.coordinator):
-            policies.append({
-                "number": p.get("NumerPolisy"),
-                "insurer": p.get("Ubezpieczyciel"),
-                "object_type": p.get("TypObiektu"),
-                "object_name": p.get("NazwaObiektu"),
-                "vehicle": p.get("MarkaPojazdu"),
-                "registration": p.get("NumerRejestracyjny"),
-                "risk": p.get("Ryzyko"),
-                "valid_from": p.get("DataObowiazywaniaOd"),
-                "valid_to": p.get("DataObowiazywaniaDo"),
-                "status": p.get("Status"),
-                "state": p.get("Stan"),
-                "contact_phone": p.get("TuNumerKontaktowy"),
-                "logo_url": p.get("TuLogoUrl"),
-                "installments": p.get("Raty") or [],
-            })
+        for p in get_active_policies(_policies(self.coordinator)):
+            policies.append(
+                {
+                    "number": p.get("NumerPolisy"),
+                    "insurer": p.get("Ubezpieczyciel"),
+                    "object_type": p.get("TypObiektu"),
+                    "object_name": p.get("NazwaObiektu"),
+                    "vehicle": p.get("MarkaPojazdu"),
+                    "registration": p.get("NumerRejestracyjny"),
+                    "risk": p.get("Ryzyko"),
+                    "valid_from": p.get("DataObowiazywaniaOd"),
+                    "valid_to": p.get("DataObowiazywaniaDo"),
+                    "status": p.get("Status"),
+                    "state": p.get("Stan"),
+                    "contact_phone": p.get("TuNumerKontaktowy"),
+                    "logo_url": p.get("TuLogoUrl"),
+                    "installments": p.get("Raty") or [],
+                }
+            )
         return {**super().extra_state_attributes, "policies": policies}
 
 
 class CukUnpaidSensor(CukBaseSensor):
-    _attr_native_unit_of_measurement = "szt."
+    """Unpaid installments count sensor."""
 
-    def __init__(self, coordinator: CukCoordinator) -> None:
-        super().__init__(coordinator, "cuk_unpaid_installments", "Niezapłacone raty")
+    def __init__(self, coordinator: CukCoordinator, entry_id: str) -> None:
+        super().__init__(coordinator, entry_id, "unpaid_installments")
 
     @property
-    def native_value(self) -> Any:
+    def native_value(self) -> int:
         return sum(
-            1 for _, r in _installments(self.coordinator)
-            if not r.get("Zaplacona", False)
+            1 for _ in get_unpaid_installments(_policies(self.coordinator))
         )
 
     @property
-    def extra_state_attributes(self):
+    def extra_state_attributes(self) -> dict[str, Any]:
         items = []
-        for p, r in _installments(self.coordinator):
-            if r.get("Zaplacona", False):
-                continue
-            items.append({
-                "policy_number": p.get("NumerPolisy"),
-                "insurer": p.get("Ubezpieczyciel"),
-                "due_date": r.get("TerminPlatnosci"),
-                "amount": r.get("Kwota"),
-                "installment_number": r.get("NumerRaty"),
-            })
+        for p, r in get_unpaid_installments(_policies(self.coordinator)):
+            items.append(
+                {
+                    "policy_number": p.get("NumerPolisy"),
+                    "insurer": p.get("Ubezpieczyciel"),
+                    "due_date": r.get("TerminPlatnosci"),
+                    "amount": r.get("Kwota"),
+                    "installment_number": r.get("NumerRaty"),
+                }
+            )
         return {**super().extra_state_attributes, "payments": items}
 
 
 class CukReceivablesSensor(CukBaseSensor):
+    """Total unpaid receivables sensor."""
+
     _attr_device_class = SensorDeviceClass.MONETARY
     _attr_native_unit_of_measurement = "PLN"
 
-    def __init__(self, coordinator: CukCoordinator) -> None:
-        super().__init__(coordinator, "cuk_receivables", "Należności")
+    def __init__(self, coordinator: CukCoordinator, entry_id: str) -> None:
+        super().__init__(coordinator, entry_id, "receivables")
 
     @property
-    def native_value(self) -> Any:
-        return round(sum(
-            float(r.get("Kwota", 0) or 0)
-            for _, r in _installments(self.coordinator)
-            if not r.get("Zaplacona", False)
-        ), 2)
+    def native_value(self) -> float:
+        return round(
+            sum(
+                float(r.get("Kwota", 0) or 0)
+                for _, r in get_unpaid_installments(_policies(self.coordinator))
+            ),
+            2,
+        )
 
 
-class _NextPaymentBase(CukBaseSensor):
-    def _next_payment(self) -> tuple[datetime, dict[str, Any], dict[str, Any]] | None:
-        candidates = []
-        for p, r in _installments(self.coordinator):
-            if r.get("Zaplacona", False):
-                continue
-            due = _dt(r.get("TerminPlatnosci"))
-            if due:
-                candidates.append((due, p, r))
-        return min(candidates, key=lambda x: x[0]) if candidates else None
+class CukNextPaymentDateSensor(CukBaseSensor):
+    """Next payment due date sensor."""
 
-
-class CukNextPaymentDateSensor(_NextPaymentBase):
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 
-    def __init__(self, coordinator: CukCoordinator) -> None:
-        super().__init__(coordinator, "cuk_next_payment_date", "Termin najbliższej płatności")
+    def __init__(self, coordinator: CukCoordinator, entry_id: str) -> None:
+        super().__init__(coordinator, entry_id, "next_payment_date")
 
     @property
-    def native_value(self) -> Any:
-        payment = self._next_payment()
+    def native_value(self) -> datetime | None:
+        payment = get_next_payment(_policies(self.coordinator))
         return payment[0] if payment else None
 
     @property
-    def extra_state_attributes(self):
-        payment = self._next_payment()
+    def extra_state_attributes(self) -> dict[str, Any]:
+        payment = get_next_payment(_policies(self.coordinator))
         if not payment:
             return super().extra_state_attributes
-        _due, p, r = payment
+        _, p, r = payment
         return {
             **super().extra_state_attributes,
             "amount": r.get("Kwota"),
@@ -238,21 +204,25 @@ class CukNextPaymentDateSensor(_NextPaymentBase):
         }
 
 
-class CukNextPaymentAmountSensor(_NextPaymentBase):
+class CukNextPaymentAmountSensor(CukBaseSensor):
+    """Next payment amount sensor."""
+
     _attr_device_class = SensorDeviceClass.MONETARY
     _attr_native_unit_of_measurement = "PLN"
 
-    def __init__(self, coordinator: CukCoordinator) -> None:
-        super().__init__(coordinator, "cuk_next_payment_amount", "Kwota najbliższej płatności")
+    def __init__(self, coordinator: CukCoordinator, entry_id: str) -> None:
+        super().__init__(coordinator, entry_id, "next_payment_amount")
 
     @property
-    def native_value(self) -> Any:
-        payment = self._next_payment()
-        return payment[2].get("Kwota") if payment else None
+    def native_value(self) -> float | None:
+        payment = get_next_payment(_policies(self.coordinator))
+        if payment and payment[2].get("Kwota") is not None:
+            return float(payment[2]["Kwota"])
+        return None
 
     @property
-    def extra_state_attributes(self):
-        payment = self._next_payment()
+    def extra_state_attributes(self) -> dict[str, Any]:
+        payment = get_next_payment(_policies(self.coordinator))
         if not payment:
             return super().extra_state_attributes
         due, p, r = payment
@@ -266,16 +236,21 @@ class CukNextPaymentAmountSensor(_NextPaymentBase):
 
 
 class CukAssistantSensor(CukBaseSensor):
-    def __init__(self, coordinator: CukCoordinator) -> None:
-        super().__init__(coordinator, "cuk_assistant", "Opiekun CUK")
+    """CUK supervisor details sensor."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: CukCoordinator, entry_id: str) -> None:
+        super().__init__(coordinator, entry_id, "assistant")
 
     @property
-    def native_value(self) -> Any:
+    def native_value(self) -> str | None:
         assistant = _assistant(self.coordinator)
-        return assistant.get("ImieNazwiskoOpiekuna") or "Brak danych"
+        val = assistant.get("ImieNazwiskoOpiekuna")
+        return str(val).strip() if val else None
 
     @property
-    def extra_state_attributes(self):
+    def extra_state_attributes(self) -> dict[str, Any]:
         a = _assistant(self.coordinator)
         return {
             **super().extra_state_attributes,
@@ -296,16 +271,22 @@ class CukAssistantSensor(CukBaseSensor):
 
 
 class CukExpiringSensor(CukBaseSensor):
-    _attr_native_unit_of_measurement = "szt."
+    """Policies expiring within configurable days count sensor."""
 
-    def __init__(self, coordinator: CukCoordinator) -> None:
-        super().__init__(coordinator, "cuk_expiring_policies", "Polisy wygasające")
+    def __init__(
+        self, coordinator: CukCoordinator, entry_id: str, expiring_days: int
+    ) -> None:
+        super().__init__(coordinator, entry_id, "expiring_policies")
+        self._expiring_days = expiring_days
 
     @property
-    def native_value(self) -> Any:
-        now = datetime.now(timezone.utc)
+    def native_value(self) -> int:
+        now = datetime.now(UTC)
+        threshold_seconds = self._expiring_days * 86400
         return sum(
-            0 <= (end - now).total_seconds() <= 30 * 86400
-            for p in _active_policies(self.coordinator)
-            if (end := _dt(p.get("DataObowiazywaniaDo"))) is not None
+            1
+            for p in get_active_policies(_policies(self.coordinator), now)
+            if (end := parse_date(p.get("DataObowiazywaniaDo"), end_of_day=True))
+            is not None
+            and 0 <= (end - now).total_seconds() <= threshold_seconds
         )

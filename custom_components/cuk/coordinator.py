@@ -1,13 +1,16 @@
+"""Data update coordinator for CUK."""
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api import CukApi, CukApiError
+from .api import CukApi, CukApiAuthenticationError, CukApiError
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -28,24 +31,21 @@ class CukCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         try:
             policies = await self.api.get_policies()
+        except CukApiAuthenticationError as err:
+            raise ConfigEntryAuthFailed(str(err)) from err
         except CukApiError as err:
             raise UpdateFailed(str(err)) from err
 
         data: dict[str, Any] = {
             "policies": policies,
             "assistant": None,
-            "calculations": None,
-            "last_update": datetime.now(timezone.utc),
         }
-
         try:
             data["assistant"] = await self.api.get_assistant()
+        except CukApiAuthenticationError as err:
+            raise ConfigEntryAuthFailed(str(err)) from err
         except CukApiError as err:
-            _LOGGER.warning("GetClientAssistant failed: %s", err)
+            _LOGGER.warning("CUK assistant endpoint failed: %s", err)
 
-        try:
-            data["calculations"] = await self.api.get_calculations()
-        except CukApiError as err:
-            _LOGGER.warning("GetClientCalculations failed: %s", err)
-
+        data["last_update"] = datetime.now(UTC)
         return data

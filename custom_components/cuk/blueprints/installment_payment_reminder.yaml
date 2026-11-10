@@ -1,0 +1,162 @@
+blueprint:
+  name: "CUK – Przypomnienie o racie płatności"
+  description: >
+    Wysyła przypomnienie o zbliżającym się terminie płatności raty ubezpieczenia
+    (kwota, data płatności, numer raty, numer polisy) z bezpośrednim linkiem
+    do opłacenia składki w portalu CUK Strefa Klienta.
+  domain: automation
+  author: "CUK Ubezpieczenia"
+  input:
+    payment_due_sensor:
+      name: Sensor wymagalności płatności
+      description: "Sensor binarny informujący o zbliżającym się terminie płatności (np. binary_sensor.*_payment_due)."
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+              device_class: problem
+    next_payment_date_sensor:
+      name: Sensor terminu najbliższej płatności
+      description: "Sensor daty najbliższej płatności z atrybutami polisy (np. sensor.*_next_payment_date)."
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+              device_class: timestamp
+    next_payment_amount_sensor:
+      name: Sensor kwoty najbliższej płatności
+      description: "Sensor kwoty do zapłaty (np. sensor.*_next_payment_amount)."
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+              device_class: monetary
+    notify_device:
+      name: Urządzenie do powiadomień mobilnych (opcjonalnie)
+      description: "Smartfon z aplikacją Home Assistant, na który wysłane zostanie przypomnienie."
+      default: ""
+      selector:
+        device:
+          filter:
+            - integration: mobile_app
+    notification_time:
+      name: Godzina przypomnienia
+      description: "Godzina, o której wysyłane jest codzienne przypomnienie, dopóki rata nie zostanie opłacona."
+      default: "09:30:00"
+      selector:
+        time: {}
+    trigger_on_state_change:
+      name: Powiadamiaj natychmiast po zmianie stanu
+      description: "Czy wysłać przypomnienie od razu, gdy sensor wykryje nowy zbliżający się termin raty."
+      default: true
+      selector:
+        boolean: {}
+    custom_actions:
+      name: Własne dodatkowe akcje (opcjonalnie)
+      description: "Dodatkowe akcje uruchamiane przy przypomnieniu (np. głośnik TTS, Telegram, powiadomienie e-mail)."
+      default: []
+      selector:
+        action: {}
+
+mode: single
+max_exceeded: silent
+
+trigger:
+  - platform: time
+    at: !input notification_time
+    id: time_trigger
+  - platform: state
+    entity_id: !input payment_due_sensor
+    to: "on"
+    id: state_trigger
+
+condition:
+  # Sprawdź, czy wyzwalacz stanu jest dozwolony
+  - condition: template
+    value_template: >-
+      {{ trigger.id != 'state_trigger' or trigger_on_state_change }}
+  # Upewnij się, że płatność jest wymagana
+  - condition: template
+    value_template: >-
+      {{ states(payment_due_sensor) == 'on' }}
+  # Upewnij się, że data płatności jest dostępna i nie jest zaległa (na zaległe służy osobny blueprint)
+  - condition: template
+    value_template: >-
+      {% set raw_date = states(next_payment_date_sensor) %}
+      {% if raw_date not in ['unknown', 'unavailable', '', none] %}
+        {% set p_date = as_datetime(raw_date) %}
+        {{ p_date is not none and p_date.date() >= now().date() }}
+      {% else %}
+        false
+      {% endif %}
+
+variables:
+  payment_due_sensor: !input payment_due_sensor
+  next_payment_date_sensor: !input next_payment_date_sensor
+  next_payment_amount_sensor: !input next_payment_amount_sensor
+  notify_device: !input notify_device
+  trigger_on_state_change: !input trigger_on_state_change
+  # Odczyt szczegółów płatności
+  amount: >-
+    {% set amt = states(next_payment_amount_sensor) %}
+    {{ amt if amt not in ['unknown', 'unavailable', '', none] else (state_attr(next_payment_date_sensor, 'amount') or '?') }}
+  due_dt: >-
+    {{ as_datetime(states(next_payment_date_sensor)) }}
+  due_date_str: >-
+    {{ due_dt.strftime('%d.%m.%Y') if due_dt is not none else 'wkrótce' }}
+  days_left: >-
+    {% if due_dt is not none %}
+      {{ (due_dt.date() - now().date()).days }}
+    {% else %}
+      -1
+    {% endif %}
+  due_status: >-
+    {% set d = days_left | int %}
+    {% if d == 0 %}
+      termin upływa DZISIAJ!
+    {% elif d == 1 %}
+      termin upływa JUTRO!
+    {% elif d > 1 %}
+      termin za {{ d }} dni
+    {% else %}
+      termin minął
+    {% endif %}
+  policy_number: >-
+    {{ state_attr(next_payment_date_sensor, 'policy_number') or state_attr(next_payment_amount_sensor, 'policy_number') or '' }}
+  insurer: >-
+    {{ state_attr(next_payment_date_sensor, 'insurer') or state_attr(next_payment_amount_sensor, 'insurer') or '' }}
+  installment_number: >-
+    {{ state_attr(next_payment_date_sensor, 'installment_number') or '' }}
+
+  remind_title: "💳 CUK: Przypomnienie o racie ubezpieczenia"
+  remind_message: >-
+    Zbliża się termin płatności raty ubezpieczenia:
+    • Kwota: {{ amount }} PLN ({{ due_status }})
+    • Termin płatności: {{ due_date_str }}
+    {% if policy_number %}• Polisa: {{ policy_number }} ({{ insurer }}){% endif %}
+    {% if installment_number %}• Rata numer: {{ installment_number }}{% endif %}
+
+action:
+  # Wysłanie powiadomienia na aplikację mobilną
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ notify_device is defined and notify_device not in ['', none] }}"
+        sequence:
+          - domain: mobile_app
+            type: notify
+            device_id: !input notify_device
+            title: "{{ remind_title }}"
+            message: "{{ remind_message }}"
+            data:
+              tag: "cuk_payment_reminder"
+              channel: "Finanse"
+              importance: "normal"
+              actions:
+                - action: "URI"
+                  title: "Opłać w Strefie Klienta"
+                  uri: "https://strefaklienta.cuk.pl"
+
+  # Wykonanie opcjonalnych dodatkowych akcji
+  - choose: []
+    default: !input custom_actions

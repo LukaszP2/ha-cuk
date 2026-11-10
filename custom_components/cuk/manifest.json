@@ -1,13 +1,15 @@
 {
   "domain": "cuk",
   "name": "CUK Strefa Klienta",
-  "version": "0.6.5",
+  "version": "0.7.1",
+  "documentation": "https://github.com/LukaszP2/ha-cuk",
   "issue_tracker": "https://github.com/LukaszP2/ha-cuk/issues",
   "requirements": [],
   "codeowners": [
     "@LukaszP2"
   ],
   "config_flow": true,
-  "iot_class": "cloud_polling",
-  "documentation": "https://github.com/LukaszP2/ha-cuk"
+  "integration_type": "service",
+  "iot_class": "cloud_polling"
 }
+

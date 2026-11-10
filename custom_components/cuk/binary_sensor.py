@@ -1,84 +1,120 @@
+"""Binary sensor platform for CUK Strefa Klienta."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from . import CukConfigEntry
+from .const import (
+    CONF_EXPIRING_DAYS,
+    CONF_PAYMENT_DUE_DAYS,
+    DEFAULT_EXPIRING_DAYS,
+    DEFAULT_PAYMENT_DUE_DAYS,
+)
 from .coordinator import CukCoordinator
-from .sensor import _active_policies, _dt, _installments
+from .models import (
+    get_active_policies,
+    get_device_info,
+    get_unpaid_installments,
+    parse_date,
+)
 
 
-def _device_info() -> dict[str, Any]:
-    return {
-        "identifiers": {(DOMAIN, "cuk")},
-        "name": "CUK Strefa Klienta",
-        "manufacturer": "CUK Ubezpieczenia",
-    }
+def _policies(coordinator: CukCoordinator) -> list[dict[str, Any]]:
+    data = coordinator.data or {}
+    return data.get("policies", []) if isinstance(data, dict) else []
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: CukConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    coordinator: CukCoordinator = entry.runtime_data
+    """Set up CUK binary sensor entities."""
+    coordinator = entry.runtime_data
+    entry_id = entry.entry_id
+    expiring_days = entry.options.get(CONF_EXPIRING_DAYS, DEFAULT_EXPIRING_DAYS)
+    payment_due_days = entry.options.get(
+        CONF_PAYMENT_DUE_DAYS, DEFAULT_PAYMENT_DUE_DAYS
+    )
+
     async_add_entities(
-        [CukPaymentDueSensor(coordinator), CukPolicyExpiringSensor(coordinator)]
+        [
+            CukPaymentDueSensor(coordinator, entry_id, payment_due_days),
+            CukPolicyExpiringSensor(coordinator, entry_id, expiring_days),
+        ]
     )
 
 
-class CukBaseBinarySensor(BinarySensorEntity):
+class CukBaseBinarySensor(CoordinatorEntity[CukCoordinator], BinarySensorEntity):
+    """Base binary sensor for CUK."""
+
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator: CukCoordinator, unique_id: str, name: str) -> None:
-        self.coordinator = coordinator
-        self._attr_unique_id = unique_id
-        self._attr_name = name
-        self._attr_device_info = _device_info()
+    def __init__(
+        self, coordinator: CukCoordinator, entry_id: str, key: str
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry_id}_{key}"
+        self._attr_translation_key = key
+        self._attr_device_info = get_device_info(entry_id)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         last_update = (self.coordinator.data or {}).get("last_update")
         return {"last_update": last_update.isoformat() if last_update else None}
 
-    @property
-    def available(self) -> bool:
-        return self.coordinator.last_update_success
-
-    async def async_added_to_hass(self) -> None:
-        self.async_on_remove(
-            self.coordinator.async_add_listener(self.async_write_ha_state)
-        )
-
 
 class CukPaymentDueSensor(CukBaseBinarySensor):
-    def __init__(self, coordinator: CukCoordinator) -> None:
-        super().__init__(coordinator, "cuk_payment_due", "Płatność wymagana")
-        self._attr_device_class = BinarySensorDeviceClass.PROBLEM
+    """Signals overdue or immediately due payments."""
+
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+    def __init__(
+        self, coordinator: CukCoordinator, entry_id: str, payment_due_days: int
+    ) -> None:
+        super().__init__(coordinator, entry_id, "payment_due")
+        self._payment_due_days = payment_due_days
 
     @property
     def is_on(self) -> bool:
+        now = datetime.now(UTC)
+        threshold_seconds = self._payment_due_days * 86400
         return any(
-            not installment.get("Zaplacona", False)
-            for _, installment in _installments(self.coordinator)
+            (due := parse_date(installment.get("TerminPlatnosci"), end_of_day=True))
+            is not None
+            and (due - now).total_seconds() <= threshold_seconds
+            for _, installment in get_unpaid_installments(_policies(self.coordinator))
         )
 
 
 class CukPolicyExpiringSensor(CukBaseBinarySensor):
-    def __init__(self, coordinator: CukCoordinator) -> None:
-        super().__init__(coordinator, "cuk_policy_expiring", "Polisa wygasa")
-        self._attr_device_class = BinarySensorDeviceClass.PROBLEM
+    """Signals that an active policy is expiring within configured days."""
+
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+    def __init__(
+        self, coordinator: CukCoordinator, entry_id: str, expiring_days: int
+    ) -> None:
+        super().__init__(coordinator, entry_id, "policy_expiring")
+        self._expiring_days = expiring_days
 
     @property
     def is_on(self) -> bool:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
+        threshold_seconds = self._expiring_days * 86400
         return any(
-            0 <= (end - now).total_seconds() <= 30 * 86400
-            for p in _active_policies(self.coordinator)
-            if (end := _dt(p.get("DataObowiazywaniaDo"))) is not None
+            0 <= (end - now).total_seconds() <= threshold_seconds
+            for p in get_active_policies(_policies(self.coordinator), now)
+            if (end := parse_date(p.get("DataObowiazywaniaDo"), end_of_day=True))
+            is not None
         )

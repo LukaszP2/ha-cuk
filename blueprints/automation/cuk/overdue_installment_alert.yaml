@@ -1,0 +1,163 @@
+blueprint:
+  name: "CUK – Alert o zaległej racie"
+  description: >
+    Wysyła pilne (opcjonalnie krytyczne) powiadomienie o zaległej racie ubezpieczenia,
+    której termin płatności minął, a składka nie została odnotowana jako opłacona.
+  domain: automation
+  author: "CUK Ubezpieczenia"
+  input:
+    payment_due_sensor:
+      name: Sensor wymagalności płatności
+      description: "Sensor binarny informujący o konieczności opłacenia raty (np. binary_sensor.*_payment_due)."
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+              device_class: problem
+    next_payment_date_sensor:
+      name: Sensor terminu najbliższej płatności
+      description: "Sensor daty najbliższej płatności (np. sensor.*_next_payment_date)."
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+              device_class: timestamp
+    next_payment_amount_sensor:
+      name: Sensor kwoty najbliższej płatności
+      description: "Sensor kwoty do zapłaty (np. sensor.*_next_payment_amount)."
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+              device_class: monetary
+    notify_device:
+      name: Urządzenie do powiadomień mobilnych (opcjonalnie)
+      description: "Smartfon z aplikacją Home Assistant, na który wysłany zostanie pilny alert."
+      default: ""
+      selector:
+        device:
+          filter:
+            - integration: mobile_app
+    alert_time:
+      name: Godzina codziennego sprawdzania zaległości
+      description: "Godzina wysyłania alertu, jeśli zaległość nadal występuje."
+      default: "11:00:00"
+      selector:
+        time: {}
+    critical_notification:
+      name: Powiadomienie krytyczne
+      description: "Wymusza głośny dźwięk powiadomienia i pominięcie trybu 'Nie przeszkadzać' (wymagane uprawnienia w aplikacji mobilnej)."
+      default: true
+      selector:
+        boolean: {}
+    custom_actions:
+      name: Własne dodatkowe akcje (opcjonalnie)
+      description: "Dodatkowe akcje uruchamiane przy wykryciu zaległości (np. powiadomienie SMS, e-mail, alert domowy)."
+      default: []
+      selector:
+        action: {}
+
+mode: single
+max_exceeded: silent
+
+trigger:
+  - platform: time
+    at: !input alert_time
+    id: time_trigger
+  - platform: state
+    entity_id: !input payment_due_sensor
+    to: "on"
+    id: state_trigger
+
+condition:
+  # Sensor płatności musi być w stanie 'on'
+  - condition: template
+    value_template: >-
+      {{ states(payment_due_sensor) == 'on' }}
+  # Data płatności musi być poprawna i w przeszłości (termin minął)
+  - condition: template
+    value_template: >-
+      {% set raw_date = states(next_payment_date_sensor) %}
+      {% if raw_date not in ['unknown', 'unavailable', '', none] %}
+        {% set p_date = as_datetime(raw_date) %}
+        {{ p_date is not none and p_date.date() < now().date() }}
+      {% else %}
+        false
+      {% endif %}
+
+variables:
+  payment_due_sensor: !input payment_due_sensor
+  next_payment_date_sensor: !input next_payment_date_sensor
+  next_payment_amount_sensor: !input next_payment_amount_sensor
+  notify_device: !input notify_device
+  critical_notification: !input critical_notification
+  # Odczyt danych o zaległości
+  amount: >-
+    {% set amt = states(next_payment_amount_sensor) %}
+    {{ amt if amt not in ['unknown', 'unavailable', '', none] else (state_attr(next_payment_date_sensor, 'amount') or '?') }}
+  due_dt: >-
+    {{ as_datetime(states(next_payment_date_sensor)) }}
+  due_date_str: >-
+    {{ due_dt.strftime('%d.%m.%Y') if due_dt is not none else 'wcześniej' }}
+  days_overdue: >-
+    {% if due_dt is not none %}
+      {{ (now().date() - due_dt.date()).days }}
+    {% else %}
+      1
+    {% endif %}
+  days_overdue_str: >-
+    {% set d = days_overdue | int %}
+    {% if d == 1 %}
+      1 dzień po terminie
+    {% elif d in [2, 3, 4] or (d > 20 and d % 10 in [2, 3, 4]) %}
+      {{ d }} dni po terminie
+    {% else %}
+      {{ d }} dni po terminie
+    {% endif %}
+  policy_number: >-
+    {{ state_attr(next_payment_date_sensor, 'policy_number') or state_attr(next_payment_amount_sensor, 'policy_number') or '' }}
+  insurer: >-
+    {{ state_attr(next_payment_date_sensor, 'insurer') or state_attr(next_payment_amount_sensor, 'insurer') or '' }}
+  installment_number: >-
+    {{ state_attr(next_payment_date_sensor, 'installment_number') or '' }}
+
+  alert_title: "🚨 PILNE: Zaległa rata ubezpieczenia CUK!"
+  alert_message: >-
+    Upłynął termin płatności raty ubezpieczenia!
+    • Zaległa kwota: {{ amount }} PLN
+    • Termin minął: {{ due_date_str }} ({{ days_overdue_str }})
+    {% if policy_number %}• Polisa: {{ policy_number }} ({{ insurer }}){% endif %}
+    {% if installment_number %}• Rata numer: {{ installment_number }}{% endif %}
+
+    Ureguluj płatność w portalu, aby uniknąć przerw w ochronie.
+
+action:
+  # Wysłanie powiadomienia o wysokim / krytycznym priorytecie
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ notify_device is defined and notify_device not in ['', none] }}"
+        sequence:
+          - domain: mobile_app
+            type: notify
+            device_id: !input notify_device
+            title: "{{ alert_title }}"
+            message: "{{ alert_message }}"
+            data:
+              tag: "cuk_payment_overdue"
+              channel: "Alert"
+              importance: "high"
+              priority: "high"
+              ttl: 0
+              push:
+                sound: "default"
+                interruption_level: >-
+                  {{ 'critical' if critical_notification else 'time-sensitive' }}
+              actions:
+                - action: "URI"
+                  title: "Opłać natychmiast"
+                  uri: "https://strefaklienta.cuk.pl"
+
+  # Wykonanie opcjonalnych dodatkowych akcji
+  - choose: []
+    default: !input custom_actions

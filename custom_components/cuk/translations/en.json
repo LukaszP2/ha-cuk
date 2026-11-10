@@ -1,1 +1,84 @@
-{"config":{"step":{"user":{"title":"CUK Customer Zone","description":"Enter the CUK user's ObjectId. The integration will resolve CukUserId automatically.","data":{"user_id":"CUK user ObjectId"}}},"error":{"invalid_user_id":"Enter the CUK user ObjectId."},"abort":{"already_configured":"This CUK account is already configured."}}}
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "CUK Customer Zone",
+        "description": "Enter the CUK user's ObjectId. The integration will resolve CukUserId automatically.",
+        "data": {
+          "user_id": "CUK user ObjectId"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate CUK",
+        "description": "CUK rejected the configured ObjectId. Enter the current ObjectId.",
+        "data": {
+          "user_id": "CUK user ObjectId"
+        }
+      },
+      "reconfigure_confirm": {
+        "title": "Reconfigure CUK",
+        "description": "Update the CUK user's ObjectId.",
+        "data": {
+          "user_id": "CUK user ObjectId"
+        }
+      }
+    },
+    "error": {
+      "invalid_user_id": "Enter a valid CUK ObjectId.",
+      "api_error": "CUK API request failed: {error}"
+    },
+    "abort": {
+      "already_configured": "This CUK account is already configured.",
+      "reauth_successful": "Re-authentication was successful.",
+      "reconfigure_successful": "Reconfiguration was successful."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "CUK Options",
+        "description": "Configure policy expiration and payment alert horizons.",
+        "data": {
+          "expiring_days": "Policy expiration alert horizon (days)",
+          "payment_due_days": "Payment due alert horizon (days)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "policies": {
+        "name": "Policies"
+      },
+      "active_policies": {
+        "name": "Active policies"
+      },
+      "unpaid_installments": {
+        "name": "Unpaid installments"
+      },
+      "receivables": {
+        "name": "Receivables"
+      },
+      "next_payment_date": {
+        "name": "Next payment date"
+      },
+      "next_payment_amount": {
+        "name": "Next payment amount"
+      },
+      "assistant": {
+        "name": "CUK assistant"
+      },
+      "expiring_policies": {
+        "name": "Expiring policies"
+      }
+    },
+    "binary_sensor": {
+      "payment_due": {
+        "name": "Payment due"
+      },
+      "policy_expiring": {
+        "name": "Policy expiring"
+      }
+    }
+  }
+}

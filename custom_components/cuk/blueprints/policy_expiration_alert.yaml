@@ -1,0 +1,164 @@
+blueprint:
+  name: "CUK – Ostrzeżenie o kończącej się polisie"
+  description: >
+    Wysyła powiadomienie z podsumowaniem kończących się polis ubezpieczeniowych
+    (np. OC, AC, majątkowe) oraz możliwością bezpośredniego kontaktu telefonicznego
+    z opiekunem CUK lub przejścia do Strefy Klienta.
+  domain: automation
+  author: "CUK Ubezpieczenia"
+  input:
+    policy_expiring_sensor:
+      name: Sensor wygasania polisy
+      description: "Sensor binarny informujący o wygasaniu polisy (np. binary_sensor.*_policy_expiring)."
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+              device_class: problem
+    active_policies_sensor:
+      name: Sensor aktywnych polis
+      description: "Sensor z listą aktywnych polis (np. sensor.*_active_policies), z którego pobierane są dane o pojazdach i terminach."
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+    assistant_sensor:
+      name: Sensor opiekuna CUK (opcjonalnie)
+      description: "Sensor z danymi kontaktowymi opiekuna CUK (np. sensor.*_assistant). Jeśli wybrany, powiadomienie zawiera dane agenta i przycisk połączenia."
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+    notify_device:
+      name: Urządzenie do powiadomień mobilnych (opcjonalnie)
+      description: "Smartfon z aplikacją Home Assistant, na który wysłane zostanie powiadomienie z przyciskami akcji."
+      default: ""
+      selector:
+        device:
+          filter:
+            - integration: mobile_app
+    notification_time:
+      name: Godzina codziennego sprawdzenia
+      description: "Godzina, o której wysyłane jest przypomnienie, jeśli polisa nadal pozostaje wygasająca."
+      default: "09:00:00"
+      selector:
+        time: {}
+    trigger_on_state_change:
+      name: Powiadamiaj natychmiast po zmianie stanu
+      description: "Czy wysłać alert od razu w chwili, gdy sensor wykryje zbliżający się koniec polisy."
+      default: true
+      selector:
+        boolean: {}
+    warning_days:
+      name: Horyzont dni do wygaśnięcia
+      description: "Liczba dni przed końcem ochrony, dla których polisa uznawana jest za wygasającą w tekście powiadomienia."
+      default: 30
+      selector:
+        number:
+          min: 1
+          max: 90
+          unit_of_measurement: dni
+          mode: box
+    custom_actions:
+      name: Własne dodatkowe akcje (opcjonalnie)
+      description: "Dodatkowe akcje uruchamiane przy alercie (np. powiadomienie Telegram, e-mail, głośnik TTS)."
+      default: []
+      selector:
+        action: {}
+
+mode: single
+max_exceeded: silent
+
+trigger:
+  - platform: time
+    at: !input notification_time
+    id: time_trigger
+  - platform: state
+    entity_id: !input policy_expiring_sensor
+    to: "on"
+    id: state_trigger
+
+condition:
+  # Sprawdź, czy wyzwalacz stanu jest dozwolony
+  - condition: template
+    value_template: >-
+      {{ trigger.id != 'state_trigger' or trigger_on_state_change }}
+  # Upewnij się, że sensor jest aktywny i nie ma stanu unknown/unavailable
+  - condition: template
+    value_template: >-
+      {{ states(policy_expiring_sensor) == 'on' }}
+
+variables:
+  policy_expiring_sensor: !input policy_expiring_sensor
+  active_policies_sensor: !input active_policies_sensor
+  assistant_sensor: !input assistant_sensor
+  notify_device: !input notify_device
+  trigger_on_state_change: !input trigger_on_state_change
+  warning_days: !input warning_days
+  # Odczyt danych opiekuna
+  agent_name: >-
+    {{ states(assistant_sensor) if assistant_sensor and states(assistant_sensor) not in ['unknown', 'unavailable', ''] else 'Twój doradca CUK' }}
+  agent_phone: >-
+    {{ (state_attr(assistant_sensor, 'phone') or state_attr(assistant_sensor, 'branch_phone') or '') if assistant_sensor else '' }}
+  agent_email: >-
+    {{ state_attr(assistant_sensor, 'email') or '' if assistant_sensor else '' }}
+  # Lista wygasających polis z atrybutów sensora aktywnych polis
+  expiring_list: >-
+    {% set policies = state_attr(active_policies_sensor, 'policies') or [] %}
+    {% set ns = namespace(items=[]) %}
+    {% for p in policies %}
+      {% set end_dt = as_datetime(p.valid_to) %}
+      {% if end_dt is not none and 0 <= (end_dt - now()).total_seconds() <= (warning_days | int * 86400) %}
+        {% set obj = (p.vehicle ~ ' ' ~ p.registration) | trim if (p.vehicle or p.registration) else (p.object_name or p.risk or p.number) %}
+        {% set ns.items = ns.items + ['• ' ~ obj ~ ' (' ~ p.insurer ~ ', nr: ' ~ p.number ~ ') – ważna do: ' ~ p.valid_to] %}
+      {% endif %}
+    {% endfor %}
+    {% if ns.items | length > 0 %}
+      {{ ns.items | join('\n') }}
+    {% else %}
+      • Wykryto kończącą się polisę. Szczegóły dostępne w Strefie Klienta CUK.
+    {% endif %}
+  alert_title: "🛡️ CUK: Kończy się ochrona ubezpieczeniowa!"
+  alert_message: >-
+    Zbliża się koniec ważności Twojej polisy ubezpieczeniowej:
+    {{ expiring_list }}
+    {% if agent_phone %}
+    Opiekun: {{ agent_name }} (tel. {{ agent_phone }})
+    {% endif %}
+
+action:
+  # Wysłanie powiadomienia na aplikację Home Assistant (jeśli wybrano urządzenie)
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ notify_device is defined and notify_device not in ['', none] }}"
+        sequence:
+          - domain: mobile_app
+            type: notify
+            device_id: !input notify_device
+            title: "{{ alert_title }}"
+            message: "{{ alert_message }}"
+            data:
+              tag: "cuk_policy_expiring"
+              channel: "Ubezpieczenia"
+              importance: "high"
+              actions: >-
+                {% set acts = [] %}
+                {% if agent_phone %}
+                  {% set acts = acts + [{
+                    "action": "URI",
+                    "title": "Zadzwoń do opiekuna",
+                    "uri": "tel:" ~ (agent_phone | string | replace(" ", ""))
+                  }] %}
+                {% endif %}
+                {% set acts = acts + [{
+                  "action": "URI",
+                  "title": "Strefa Klienta CUK",
+                  "uri": "https://strefaklienta.cuk.pl"
+                }] %}
+                {{ acts }}
+
+  # Wykonanie ewentualnych akcji użytkownika
+  - choose: []
+    default: !input custom_actions

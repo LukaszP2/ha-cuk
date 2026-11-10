@@ -23,6 +23,16 @@ with open('${MANIFEST}', 'r+') as f:
     f.truncate()
 "
 
+if [ -d "${REPO_DIR}/blueprints/automation/cuk" ]; then
+    mkdir -p "${REPO_DIR}/custom_components/cuk/blueprints"
+    for f in "${REPO_DIR}/blueprints/automation/cuk/"*.yaml; do
+        target="${REPO_DIR}/custom_components/cuk/blueprints/$(basename "$f")"
+        if [ ! -e "$target" ] || ! cmp -s "$f" "$target"; then
+            cp --remove-destination -f "$f" "$target"
+        fi
+    done
+fi
+
 git -C "${REPO_DIR}" add .
 git -C "${REPO_DIR}" commit -m "Bump version to ${NEW_VER}: ${MSG}" || true
 git -C "${REPO_DIR}" tag -a "v${NEW_VER}" -m "${MSG}"

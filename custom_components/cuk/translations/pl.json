@@ -1,1 +1,84 @@
-{"config":{"step":{"user":{"title":"CUK Strefa Klienta","description":"Podaj ObjectId użytkownika CUK. Integracja automatycznie pobierze CukUserId.","data":{"user_id":"ObjectId użytkownika CUK"}}},"error":{"invalid_user_id":"Podaj ObjectId użytkownika CUK."},"abort":{"already_configured":"To konto CUK jest już skonfigurowane."}}}
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "CUK Strefa Klienta",
+        "description": "Podaj ObjectId użytkownika CUK. Integracja automatycznie pobierze CukUserId.",
+        "data": {
+          "user_id": "ObjectId użytkownika CUK"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Ponowna autoryzacja CUK",
+        "description": "CUK odrzucił zapisany ObjectId. Podaj aktualny ObjectId.",
+        "data": {
+          "user_id": "ObjectId użytkownika CUK"
+        }
+      },
+      "reconfigure_confirm": {
+        "title": "Zmień konfigurację CUK",
+        "description": "Zaktualizuj ObjectId użytkownika CUK.",
+        "data": {
+          "user_id": "ObjectId użytkownika CUK"
+        }
+      }
+    },
+    "error": {
+      "invalid_user_id": "Podaj prawidłowy ObjectId użytkownika CUK.",
+      "api_error": "Błąd komunikacji z API CUK: {error}"
+    },
+    "abort": {
+      "already_configured": "To konto CUK jest już skonfigurowane.",
+      "reauth_successful": "Ponowna autoryzacja zakończona sukcesem.",
+      "reconfigure_successful": "Zmiana konfiguracji zakończona sukcesem."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opcje CUK",
+        "description": "Skonfiguruj horyzonty powiadomień o wygasaniu polis i terminach płatności.",
+        "data": {
+          "expiring_days": "Horyzont ostrzegania o wygasaniu polisy (dni)",
+          "payment_due_days": "Horyzont ostrzegania o zbliżającej się płatności (dni)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "policies": {
+        "name": "Polisy"
+      },
+      "active_policies": {
+        "name": "Aktywne polisy"
+      },
+      "unpaid_installments": {
+        "name": "Niezapłacone raty"
+      },
+      "receivables": {
+        "name": "Należności"
+      },
+      "next_payment_date": {
+        "name": "Termin najbliższej płatności"
+      },
+      "next_payment_amount": {
+        "name": "Kwota najbliższej płatności"
+      },
+      "assistant": {
+        "name": "Opiekun CUK"
+      },
+      "expiring_policies": {
+        "name": "Polisy wygasające"
+      }
+    },
+    "binary_sensor": {
+      "payment_due": {
+        "name": "Płatność wymagana"
+      },
+      "policy_expiring": {
+        "name": "Polisa wygasa"
+      }
+    }
+  }
+}
